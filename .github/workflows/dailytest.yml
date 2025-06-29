@@ -1,0 +1,200 @@
+name: shadow-zap-daily-test
+
+on:
+  schedule:
+    # Runs at 02:00 UTC, Monday to Saturday
+    - cron: '0 2 * * 1-6'
+  workflow_dispatch:
+
+jobs:
+  zq_core:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: 'zap/initiate'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 'zap/identity-setter'
+        run: |
+          git config user.name "${{ secrets.GIT_USER_NAME }}"
+          git config user.email "${{ secrets.GIT_USER_EMAIL }}"
+
+      - name: 'zap/vector-decider'
+        id: zq_type
+        run: |
+          # Allow manual override for testing specific actions
+          INPUT="${{ github.event.inputs.test_action }}"
+          if [ -n "$INPUT" ]; then
+            case "$INPUT" in
+              cmt) echo "action=commit" >> $GITHUB_OUTPUT; exit 0 ;;
+              is)  echo "action=issue" >> $GITHUB_OUTPUT; exit 0 ;;
+              pr)  echo "action=pull_request" >> $GITHUB_OUTPUT; exit 0 ;;
+              *)   echo "Invalid test_action: '$INPUT'. Falling back to scheduled action." ;;
+            esac
+          fi
+
+          # Select an action pool based on the day of the week (1=Monday, 6=Saturday)
+          # This schedule is rebalanced to exclude reviews.
+          DAY_OF_WEEK=$(date +%u)
+          
+          case $DAY_OF_WEEK in
+            1) # 2 commits, 1 issue
+               ACTIONS=(commit commit issue) ;;
+            2) # 2 commits, 1 pull_request
+               ACTIONS=(commit commit pull_request) ;;
+            3) # 2 commits, 1 issue
+               ACTIONS=(commit commit issue) ;;
+            4) # 2 commits, 1 pull_request
+               ACTIONS=(commit commit pull_request) ;;
+            5) # 2 commits, 1 issue, 1 pull_request
+               ACTIONS=(commit commit issue pull_request) ;;
+            6) # 2 commits, 1 issue
+               ACTIONS=(commit commit issue) ;;
+            *) # Fallback for Sunday or errors
+               ACTIONS=(commit) ;;
+          esac
+          
+          # Select a random action from today's pool
+          RANDOM_ACTION=${ACTIONS[$((RANDOM % ${#ACTIONS[@]}))]}
+          echo "Selected action for Day $DAY_OF_WEEK: $RANDOM_ACTION"
+          echo "action=$RANDOM_ACTION" >> $GITHUB_OUTPUT
+
+      - name: 'zap/datastream-mutator'
+        if: steps.zq_type.outputs.action == 'commit'
+        run: |
+          set -e
+          # This function generates a random string and silences the "broken pipe" error.
+          rand_str() {
+            tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c "$1"
+          }
+          
+          git checkout main
+          git pull origin main --rebase
+
+          BASE_DIR="data_gen"
+          TARGET_FOLDERS=10
+          FILES_PER_FOLDER=10
+
+          find src tests -type f | while read -r file; do
+            echo "// @$(date +%s) [$(rand_str 12)]" >> "$file"
+            git add "$file"
+          done
+
+          mkdir -p "$BASE_DIR"
+          EXISTING_FOLDERS=($(find "$BASE_DIR" -mindepth 1 -maxdepth 1 -type d | sort))
+
+          for idx in "${!EXISTING_FOLDERS[@]}"; do
+            if [ "$idx" -ge $TARGET_FOLDERS ]; then
+              rm -rf "${EXISTING_FOLDERS[$idx]}"
+            fi
+          done
+
+          for i in $(seq 1 $TARGET_FOLDERS); do
+            NEW_NAME=$(rand_str 3)
+            DEST_PATH="$BASE_DIR/$NEW_NAME"
+
+            if [ "$i" -le "${#EXISTING_FOLDERS[@]}" ]; then
+              OLD_PATH="${EXISTING_FOLDERS[$((i-1))]}"
+              if [ "$OLD_PATH" != "$DEST_PATH" ]; then
+                mv "$OLD_PATH" "$DEST_PATH"
+              fi
+            else
+              mkdir -p "$DEST_PATH"
+            fi
+
+            FOLDER_PATH="$DEST_PATH"
+            EXISTING_FILES=($(find "$FOLDER_PATH" -maxdepth 1 -type f | sort))
+
+            for idxf in "${!EXISTING_FILES[@]}"; do
+              if [ "$idxf" -ge $FILES_PER_FOLDER ]; then
+                rm -f "${EXISTING_FILES[$idxf]}"
+              fi
+            done
+
+            for j in $(seq 1 $FILES_PER_FOLDER); do
+              NEW_FILE_NAME="$(rand_str 5)_$(shuf -n1 -e log txt rs dat bin)"
+              NEW_FILE_PATH="$FOLDER_PATH/$NEW_FILE_NAME"
+
+              if [ "$j" -le "${#EXISTING_FILES[@]}" ]; then
+                OLD_FILE="${EXISTING_FILES[$((j-1))]}"
+                if [ "$OLD_FILE" != "$NEW_FILE_PATH" ]; then
+                  mv "$OLD_FILE" "$NEW_FILE_PATH"
+                fi
+              fi
+
+              head -c 256 /dev/urandom > "$NEW_FILE_PATH"
+              git add "$NEW_FILE_PATH"
+            done
+          done
+          
+          # Commit message is 32 random characters
+          COMMIT_MSG=$(rand_str 32)
+          git commit -m "$COMMIT_MSG"
+          git push origin main
+
+      - name: 'zap/anomaly-logger'
+        if: steps.zq_type.outputs.action == 'issue'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_GITHUB }}
+        run: |
+          rand_str() {
+            tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c "$1"
+          }
+          # Issue title is 12 random characters, body is 32
+          TITLE=$(rand_str 12)
+          BODY=$(rand_str 32)
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "$TITLE" \
+            --body "$BODY"
+
+      - name: 'zap/delta-proposer'
+        if: steps.zq_type.outputs.action == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_GITHUB }}
+        run: |
+          set -e
+          rand_str() {
+            tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c "$1"
+          }
+
+          git fetch origin
+          git checkout main
+          git pull origin main --rebase
+
+          if git show-ref --verify --quiet refs/remotes/origin/main2; then
+            git checkout main2
+            git pull origin main2 --rebase
+            git rebase main
+          else
+            git checkout -b main2 main
+          fi
+
+          FILENAME="features/$(rand_str 8).rs"
+          mkdir -p "$(dirname "$FILENAME")"
+          echo "// Feature @$(date +%s) $(rand_str 12)" > "$FILENAME"
+
+          git add "$FILENAME"
+          git commit -m "feat(main2): $(rand_str 24)"
+          git push origin main2 --force
+          
+          # PR title is 12 random characters, body is 32
+          TITLE=$(rand_str 12)
+          BODY=$(rand_str 32)
+          
+          # This step ONLY creates or updates the pull request. No review/merge.
+          PR_URL=$(gh pr create \
+            --repo "${{ github.repository }}" \
+            --base main \
+            --head main2 \
+            --title "$TITLE" \
+            --body "$BODY" \
+            || true)
+          
+          echo "PR created or already exists: $PR_URL"
