@@ -1,8 +1,6 @@
 name: shadow-zap-daily-test
 
 on:
-  push:
-    branches: [ main ]
   schedule:
     - cron: '0 2 * * 1-6'
   workflow_dispatch:
