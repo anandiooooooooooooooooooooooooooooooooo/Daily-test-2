@@ -1,0 +1,50 @@
+# This workflow automatically closes pull requests opened by anyone except the repository owner.
+# To use this, create a file named `pr-filter.yml` inside the `.github/workflows/` directory
+# in your repository and paste this code into it.
+
+name: 'Pull Request Filter'
+
+on:
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  filter-prs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 'Check Pull Request Author'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Get the repository owner and the pull request author
+            const repoOwner = context.repo.owner;
+            const prAuthor = context.payload.pull_request.user.login;
+
+            console.log(`Repository Owner: ${repoOwner}`);
+            console.log(`Pull Request Author: ${prAuthor}`);
+
+            // If the author is not the owner, close the pull request
+            if (prAuthor !== repoOwner) {
+              console.log('Author is not the owner. Closing the pull request.');
+
+              // Add a comment explaining why the PR was closed
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: 'Thank you for your interest in this project. However, this repository is not accepting external contributions at this time. This pull request has been automatically closed.'
+              });
+
+              // Close the pull request
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                state: 'closed'
+              });
+            } else {
+              console.log('Author is the repository owner. Keeping the pull request open.');
+            }
