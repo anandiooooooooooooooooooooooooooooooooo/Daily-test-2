@@ -2,9 +2,15 @@ name: shadow-zap-daily-test
 
 on:
   schedule:
-    - cron: '0 2 * * 1-6'
+    - cron: '0 0 * * *'
+    - cron: '0 3 * * *'
+    - cron: '0 6 * * *'
+    - cron: '0 9 * * *'
+    - cron: '0 12 * * *'
+    - cron: '0 15 * * *'
+    - cron: '0 18 * * *'
+    - cron: '0 21 * * *'
   workflow_dispatch:
-
 
 jobs:
   zq_core:
@@ -25,10 +31,22 @@ jobs:
           git config user.name "${{ secrets.GIT_USER_NAME }}"
           git config user.email "${{ secrets.GIT_USER_EMAIL }}"
 
+      - name: 'zap/slot-throttler (3-7 runs/day)'
+        id: run_decision
+        run: |
+          # 60% chance to continue (approx. 5 out of 8 runs/day)
+          SHOULD_RUN=$((RANDOM % 10 < 6))
+          echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
+          if [ "$SHOULD_RUN" -eq 0 ]; then
+            echo "🔕 Skipping this run for throttling."
+            exit 0
+          else
+            echo "✅ Proceeding with execution."
+          fi
+
       - name: 'zap/vector-decider'
         id: zq_type
         run: |
-          # Allow manual override for testing specific actions
           INPUT="${{ github.event.inputs.test_action }}"
           if [ -n "$INPUT" ]; then
             case "$INPUT" in
@@ -39,28 +57,18 @@ jobs:
             esac
           fi
 
-          # Select an action pool based on the day of the week (1=Monday, 6=Saturday)
-          # This schedule is rebalanced to exclude reviews.
           DAY_OF_WEEK=$(date +%u)
-          
           case $DAY_OF_WEEK in
-            1) # 2 commits, 1 issue
-               ACTIONS=(commit commit issue) ;;
-            2) # 2 commits, 1 pull_request
-               ACTIONS=(commit commit pull_request) ;;
-            3) # 2 commits, 1 issue
-               ACTIONS=(commit commit issue) ;;
-            4) # 2 commits, 1 pull_request
-               ACTIONS=(commit commit pull_request) ;;
-            5) # 2 commits, 1 issue, 1 pull_request
-               ACTIONS=(commit commit issue pull_request) ;;
-            6) # 2 commits, 1 issue
-               ACTIONS=(commit commit issue) ;;
-            *) # Fallback for Sunday or errors
-               ACTIONS=(commit) ;;
+            1) ACTIONS=(commit commit issue) ;;
+            2) ACTIONS=(commit commit pull_request) ;;
+            3) ACTIONS=(commit commit issue) ;;
+            4) ACTIONS=(commit commit pull_request) ;;
+            5) ACTIONS=(commit commit issue pull_request) ;;
+            6) ACTIONS=(commit commit issue) ;;
+            7) ACTIONS=(commit pull_request issue) ;;
+            *) ACTIONS=(commit) ;;
           esac
-          
-          # Select a random action from today's pool
+
           RANDOM_ACTION=${ACTIONS[$((RANDOM % ${#ACTIONS[@]}))]}
           echo "Selected action for Day $DAY_OF_WEEK: $RANDOM_ACTION"
           echo "action=$RANDOM_ACTION" >> $GITHUB_OUTPUT
@@ -69,11 +77,10 @@ jobs:
         if: steps.zq_type.outputs.action == 'commit'
         run: |
           set -e
-          # This function generates a random string and silences the "broken pipe" error.
           rand_str() {
             tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c "$1"
           }
-          
+
           git checkout main
           git pull origin main --rebase
 
@@ -121,7 +128,7 @@ jobs:
               NEW_FILE_NAME="$(rand_str 5)_$(shuf -n1 -e log txt rs dat bin)"
               NEW_FILE_PATH="$FOLDER_PATH/$NEW_FILE_NAME"
 
-              if [ "$j" -le "${#EXISTING_FILES[@]}" ]; then
+              if [ "$j" -le "${#EXISTING_FILES[@]}"]; then
                 OLD_FILE="${EXISTING_FILES[$((j-1))]}"
                 if [ "$OLD_FILE" != "$NEW_FILE_PATH" ]; then
                   mv "$OLD_FILE" "$NEW_FILE_PATH"
@@ -132,8 +139,7 @@ jobs:
               git add "$NEW_FILE_PATH"
             done
           done
-          
-          # Commit message is 32 random characters
+
           COMMIT_MSG=$(rand_str 32)
           git commit -m "$COMMIT_MSG"
           git push origin main
@@ -146,7 +152,6 @@ jobs:
           rand_str() {
             tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c "$1"
           }
-          # Issue title is 12 random characters, body is 32
           TITLE=$(rand_str 12)
           BODY=$(rand_str 32)
           gh issue create \
@@ -183,12 +188,9 @@ jobs:
           git add "$FILENAME"
           git commit -m "feat(main2): $(rand_str 24)"
           git push origin main2 --force
-          
-          # PR title is 12 random characters, body is 32
+
           TITLE=$(rand_str 12)
           BODY=$(rand_str 32)
-          
-          # This step ONLY creates or updates the pull request. No review/merge.
           PR_URL=$(gh pr create \
             --repo "${{ github.repository }}" \
             --base main \
@@ -196,5 +198,5 @@ jobs:
             --title "$TITLE" \
             --body "$BODY" \
             || true)
-          
+
           echo "PR created or already exists: $PR_URL"
